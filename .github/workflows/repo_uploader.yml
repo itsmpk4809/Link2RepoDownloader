@@ -12,6 +12,11 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
+      - name: Checkout Main Manager Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.ADMIN_PAT }} # Uses your token so it can push updates back to README
+
       - name: System Environment Check
         env:
           ADMIN_PAT: ${{ secrets.ADMIN_PAT }}
@@ -24,7 +29,7 @@ jobs:
       - name: Process, Split, and Deploy All Links
         env:
           RAW_URLS: ${{ github.event.inputs.file_urls }}
-          GH_TOKEN: ${{ secrets.ADMIN_PAT }} # Bypasses validation by mapping directly to GH_TOKEN
+          GH_TOKEN: ${{ secrets.ADMIN_PAT }}
           ADMIN_PAT: ${{ secrets.ADMIN_PAT }}
           GITHUB_OWNER: ${{ github.repository_owner }}
         run: |
@@ -32,7 +37,7 @@ jobs:
           echo "$RAW_URLS" | tr ' ' '\n' | tr -d '\r' | sed '/^[[:space:]]*$/d' > clean_urls.txt
 
           echo "## 📦 Multi-Link Extraction Summary" >> $GITHUB_STEP_SUMMARY
-          echo "Your files have been isolated into dedicated repositories to bypass network limitations. Download each repository ZIP below:" >> $GITHUB_STEP_SUMMARY
+          echo "Your files have been isolated into dedicated repositories. Download each repository ZIP below:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           COUNTER=1
@@ -67,19 +72,16 @@ jobs:
               echo "⚠️ File size is $FILE_SIZE MB (Exceeds 95MB limit). Activating Split Engine..."
               split -b 90m "$FILENAME" "${FILENAME}.part_"
               rm "$FILENAME"
-              echo "✅ Successfully split into 90MB segments."
               IS_SPLIT="true"
-            else
-              echo "✅ File size is $FILE_SIZE MB. Keeping original unified format."
             fi
 
             SAFE_NAME=$(echo "$FILENAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/_/g' | cut -c1-50)
             REPO_NAME="file-delivery-${SAFE_NAME}-${COUNTER}"
             
             echo "🛠️ Creating dedicated repository: $REPO_NAME"
-            # Creating repo natively using the mapped GH_TOKEN environment variable
             gh repo create "$REPO_NAME" --public --description "Dedicated transport module for $FILENAME." || true
 
+            # Local git initialization for the sub-repo
             git init
             git config --global user.name "github-actions[bot]"
             git config --global user.email "github-actions[bot]@users.noreply.github.com"
@@ -98,23 +100,38 @@ jobs:
             git commit -m "Deploy asset tracking module via multi-link downloader"
             git remote add origin "https://$ADMIN_PAT@github.com/$GITHUB_OWNER/$REPO_NAME.git"
             git branch -M main
-            
-            echo "📤 Uploading files to GitHub ecosystem..."
             git push -u origin main --force
 
+            # Step Summary Links
             echo "### 🔹 File: $FILENAME ($FILE_SIZE MB)" >> $GITHUB_STEP_SUMMARY
             echo "🔗 **[Click Here to Download Source ZIP](https://github.com/$GITHUB_OWNER/$REPO_NAME/archive/refs/heads/main.zip)**" >> $GITHUB_STEP_SUMMARY
-            
-            if [ "$IS_SPLIT" = "true" ]; then
-              echo "* ⚠️ *This file is split inside the ZIP. Run the command inside the extraction folder to re-merge it.*" >> $GITHUB_STEP_SUMMARY
-            else
-              echo "* ✅ *This file is whole. Just unzip it and go.*" >> $GITHUB_STEP_SUMMARY
-            fi
             echo "" >> $GITHUB_STEP_SUMMARY
 
+            # APPEND REPO LOGIC TO PARENT MANAGER README.MD
             cd ..
+            python3 -c "
+            import os
+            new_entry = '*   **File:** $FILENAME ($FILE_SIZE MB) | [Go to Repo](https://github.com/$GITHUB_OWNER/$REPO_NAME) | [🚀 Direct ZIP Download](https://github.com/$GITHUB_OWNER/$REPO_NAME/archive/refs/heads/main.zip)\n'
+            with open('README.md', 'r') as f:
+                content = f.read()
+            marker = '<!-- DOWNLOADED-REPOS-START -->'
+            if marker in content:
+                parts = content.split(marker)
+                updated = parts[0] + marker + '\n' + new_entry + parts[1]
+                with open('README.md', 'w') as f:
+                    f.write(updated)
+            "
+
             rm -rf "$WORK_DIR"
             COUNTER=$((COUNTER + 1))
 
           done < clean_urls.txt
           rm -f clean_urls.txt
+
+      - name: Save and Commit README updates
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git diff-index --quiet HEAD || git commit -m "docs: dynamically document newly added repos inside layout structure"
+          git push origin main
