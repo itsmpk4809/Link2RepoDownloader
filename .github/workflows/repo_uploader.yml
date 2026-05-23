@@ -1,4 +1,4 @@
-name: Multi-File Downloader via Repository Injection (M-NRZ)
+name: File Downloader via Repository Injection (M-NRZ)
 on:
   workflow_dispatch:
     inputs:
