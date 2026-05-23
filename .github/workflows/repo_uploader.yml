@@ -1,4 +1,4 @@
-name: Multi-File Downloader via Repository Injection (M-NRZ)
+name: Combined File Downloader via Single Repository (M-NRZ)
 on:
   workflow_dispatch:
     inputs:
@@ -8,134 +8,140 @@ on:
         type: string
 
 jobs:
-  create_and_push:
+  bundle_and_push:
     runs-on: ubuntu-latest
     
     steps:
       - name: Checkout Main Manager Repository
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.ADMIN_PAT }} # Uses your token so it can push updates back to README
+          token: ${{ secrets.ADMIN_PAT }}
 
       - name: System Environment Check
         env:
           ADMIN_PAT: ${{ secrets.ADMIN_PAT }}
         run: |
           if [ -z "$ADMIN_PAT" ]; then
-            echo "❌ Error: ADMIN_PAT secret is missing. Please create it in your settings."
+            echo "❌ Error: ADMIN_PAT secret is missing."
             exit 1
           fi
 
-      - name: Process, Split, and Deploy All Links
+      - name: Download, Process, and Bundle All Links
         env:
           RAW_URLS: ${{ github.event.inputs.file_urls }}
           GH_TOKEN: ${{ secrets.ADMIN_PAT }}
           ADMIN_PAT: ${{ secrets.ADMIN_PAT }}
           GITHUB_OWNER: ${{ github.repository_owner }}
         run: |
-          # SANITIZATION ENGINE: Convert spaces to newlines and clean empty rows
+          # 1. Setup a single unified storage repo name based on the run ID
+          REPO_NAME="file-bundle-delivery-${{ github.run_id }}"
+          echo "🛠️ Provisioning single consolidated repository: $REPO_NAME"
+          gh repo create "$REPO_NAME" --public --description "Consolidated transport bundle container." || true
+
+          # 2. Setup local workspace directory
+          WORK_DIR="unified_bundle_space"
+          mkdir -p "$WORK_DIR"
+          cd "$WORK_DIR"
+
+          # Generate an accurate, clean timestamp string (Format: YYYY-MM-DD_HH-MM)
+          # Example output: 2026-05-23_11-45
+          TIMESTAMP=$(date +'%Y-%m-%d_%H-%M')
+
+          # Initialize git and meta documentation
+          git init
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          echo "# 📦 Consolidated Asset Transport Bundle" > README.md
+          echo "This repository contains all your requested file downloads grouped together." >> README.md
+          echo "" >> README.md
+          echo "### 🛠️ Windows Reassembly Instructions" >> README.md
+          echo "If any files were split due to size constraints, simply double-click **\`Run_All_Mergers.bat\`** inside the extracted folder to reconstruct them all simultaneously." >> README.md
+
+          # Initialize the master batch file script
+          echo "@echo off" > Run_All_Mergers.bat
+          echo "echo 🛠️ M-NRZ Consolidated File Unification Engine" >> Run_All_Mergers.bat
+          echo "echo 📥 Beginning batch fragment stitch execution..." >> Run_All_Mergers.bat
+
+          # Clean and parse incoming link array strings
           echo "$RAW_URLS" | tr ' ' '\n' | tr -d '\r' | sed '/^[[:space:]]*$/d' > clean_urls.txt
 
-          echo "## 📦 Multi-Link Extraction Summary" >> $GITHUB_STEP_SUMMARY
-          echo "Your files have been isolated into dedicated repositories. Download each repository ZIP below:" >> $GITHUB_STEP_SUMMARY
+          echo "## 📦 Consolidated Delivery Summary" >> $GITHUB_STEP_SUMMARY
+          echo "All requested files have been grouped into a single repository layout wrapper structure:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
+          HAS_SPLIT_FILES="false"
           COUNTER=1
 
+          # 3. Download and evaluate all files sequentially in the workspace
           while IFS= read -r URL || [ -n "$URL" ]; do
             echo "----------------------------------------------------"
-            echo "Processing Link ($COUNTER): $URL"
-            
-            WORK_DIR="job_space_${COUNTER}"
-            mkdir -p "$WORK_DIR"
-            cd "$WORK_DIR"
+            echo "Downloading asset link target ($COUNTER): $URL"
             
             RAW_NAME=$(basename "$URL" | cut -d? -f1)
-            FILENAME=$(echo "$RAW_NAME" | sed 's/[^a-zA-Z0-9._-]/_/g')
             
-            if [ -z "$FILENAME" ]; then
-              FILENAME="downloaded_file_${COUNTER}.bin"
-            fi
+            # Separate the base name from the extension (e.g., "v2rayN" and "zip")
+            BASE_NAME="${RAW_NAME%.*}"
+            EXTENSION="${RAW_NAME##*.}"
+            
+            # Sanitize the base name to remove illegal characters
+            CLEAN_BASE=$(echo "$BASE_NAME" | sed 's/[^a-zA-Z0-9._-]/_/g')
+            [ -z "$CLEAN_BASE" ] && CLEAN_BASE="downloaded_file_${COUNTER}"
 
-            echo "📥 Downloading $FILENAME..."
+            # Append the unique Timestamp and Counter to prevent same-name conflicts!
+            # Result format: file_2026-05-23_11-45_1.zip
+            FILENAME="${CLEAN_BASE}_${TIMESTAMP}_${COUNTER}.${EXTENSION}"
+
             if ! curl -L "$URL" -o "$FILENAME"; then
-              echo "❌ Failed to download $URL. Skipping to next link."
-              cd .. && rm -rf "$WORK_DIR"
+              echo "❌ Failed to download $URL. Skipping..."
               COUNTER=$((COUNTER + 1))
               continue
             fi
 
             FILE_SIZE=$(du -m "$FILENAME" | cut -f1)
-            IS_SPLIT="false"
-            
-            # Local git initialization for the sub-repo (Needed early to write internal configurations)
-            git init
-            git config --global user.name "github-actions[bot]"
-            git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-            echo "# Storage Container for $FILENAME" > README.md
-            echo "This isolated branch securely stores your asset package." >> README.md
-            echo "" >> README.md
-
+            # Split logic inside the workspace folder if individual components violate size boundaries
             if [ "$FILE_SIZE" -gt 95 ]; then
-              echo "⚠️ File size is $FILE_SIZE MB (Exceeds 95MB limit). Activating Split Engine..."
+              echo "⚠️ File $FILENAME is $FILE_SIZE MB. Activating individual splitting matrix..."
               split -b 90m "$FILENAME" "${FILENAME}.part_"
               rm "$FILENAME"
-              IS_SPLIT="true"
-
-              # CREATE AUTOMATED WINDOWS BATCH FILE
-              echo "@echo off" > Run_Merger.bat
-              echo "echo 🛠️ M-NRZ Automated File Unification Module" >> Run_Merger.bat
-              echo "echo 📥 Stitching broken data fragments back into: $FILENAME" >> Run_Merger.bat
-              echo "copy /b \"$FILENAME.part_*\" \"$FILENAME\"" >> Run_Merger.bat
-              echo "echo ✅ Reassembly complete! Clean archive has been successfully restored." >> Run_Merger.bat
-              echo "pause" >> Run_Merger.bat
-
-              echo "### 🛠️ Reassembly Instructions" >> README.md
-              echo "This file was split to fit within GitHub limits. To stitch it back together:" >> README.md
-              echo "- **Windows:** Simply double-click the **\`Run_Merger.bat\`** file inside this folder!" >> README.md
-              echo "- **Linux / Mac / Android:** Run \`cat \"$FILENAME.part_\"* > \"$FILENAME\"\` inside your terminal." >> README.md
+              echo "copy /b \"$FILENAME.part_*\" \"$FILENAME\"" >> Run_All_Mergers.bat
+              HAS_SPLIT_FILES="true"
+              echo "*   📦 **$FILENAME** ($FILE_SIZE MB) -> *[Status: Split into parts]*" >> $GITHUB_STEP_SUMMARY
             else
-              echo "✅ File size is $FILE_SIZE MB. Keeping original unified format."
+              echo "✅ File $FILENAME ($FILE_SIZE MB) fits perfectly inside container limits."
+              echo "*   📄 **$FILENAME** ($FILE_SIZE MB) -> *[Status: Whole]*" >> $GITHUB_STEP_SUMMARY
             fi
 
-            SAFE_NAME=$(echo "$FILENAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/_/g' | cut -c1-50)
-            REPO_NAME="file-delivery-${SAFE_NAME}-${COUNTER}"
-            
-            echo "🛠️ Creating dedicated repository: $REPO_NAME"
-            gh repo create "$REPO_NAME" --public --description "Dedicated transport module for $FILENAME." || true
-
-            git add .
-            git commit -m "Deploy asset tracking module via multi-link downloader"
-            git remote add origin "https://$ADMIN_PAT@github.com/$GITHUB_OWNER/$REPO_NAME.git"
-            git branch -M main
-            git push -u origin main --force
-
-            # Step Summary Links
-            echo "### 🔹 File: $FILENAME ($FILE_SIZE MB)" >> $GITHUB_STEP_SUMMARY
-            echo "🔗 **[Click Here to Download Source ZIP](https://github.com/$GITHUB_OWNER/$REPO_NAME/archive/refs/heads/main.zip)**" >> $GITHUB_STEP_SUMMARY
-            
-            if [ "$IS_SPLIT" = "true" ]; then
-              echo "* ⚡ *This file is split. After unzipping, simply double-click **Run_Merger.bat** to perfectly fuse it back!*" >> $GITHUB_STEP_SUMMARY
-            else
-              echo "* ✅ *This file is whole. Just unzip it and go.*" >> $GITHUB_STEP_SUMMARY
-            fi
-            echo "" >> $GITHUB_STEP_SUMMARY
-
-            # APPEND REPO LOGIC TO PARENT MANAGER README.MD
-            cd ..
-            python3 -c "import os; marker='<!-- DOWNLOADED-REPOS-START -->'; entry='*   **File:** $FILENAME ($FILE_SIZE MB) | [Go to Repo](https://github.com/$GITHUB_OWNER/$REPO_NAME) | [🚀 Direct ZIP Download](https://github.com/$GITHUB_OWNER/$REPO_NAME/archive/refs/heads/main.zip)\n'; content=open('README.md').read(); open('README.md','w').write(content.replace(marker, marker+'\n'+entry)) if marker in content else print('Marker error')"
-
-            rm -rf "$WORK_DIR"
             COUNTER=$((COUNTER + 1))
 
           done < clean_urls.txt
           rm -f clean_urls.txt
+
+          # 4. Clean up batch file if no splits actually happened
+          echo "echo ✅ Dynamic batch processing complete!" >> Run_All_Mergers.bat
+          echo "pause" >> Run_All_Mergers.bat
+          if [ "$HAS_SPLIT_FILES" = "false" ]; then
+            rm -f Run_All_Mergers.bat
+          fi
+
+          # 5. Commit and push everything up to the single tracking repository
+          git add .
+          git commit -m "Deploy all consolidated assets inside unified delivery package"
+          git remote add origin "https://$ADMIN_PAT@github.com/$GITHUB_OWNER/$REPO_NAME.git"
+          git branch -M main
+          git push -u origin main --force
+
+          # 6. Append tracking links back to the main repository index configuration file layout
+          cd ..
+          echo "🔗 **[🚀 Download Consolidated ZIP Containing All Files](https://github.com/$GITHUB_OWNER/$REPO_NAME/archive/refs/heads/main.zip)**" >> $GITHUB_STEP_SUMMARY
+          
+          python3 -c "import os; marker='<!-- DOWNLOADED-REPOS-START -->'; entry='*   **Consolidated Bundle ($TIMESTAMP):** [Go to Repository](https://github.com/$GITHUB_OWNER/$REPO_NAME) | [🚀 Download Single ZIP Bundle](https://github.com/$GITHUB_OWNER/$REPO_NAME/archive/refs/heads/main.zip)\n'; content=open('README.md').read(); open('README.md','w').write(content.replace(marker, marker+'\n'+entry)) if marker in content else print('Marker error')"
 
       - name: Save and Commit README updates
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add README.md
-          git diff-index --quiet HEAD || git commit -m "docs: dynamically document newly added repos inside layout structure"
+          git diff-index --quiet HEAD || git commit -m "docs: append consolidated delivery container entry link to registry index file"
           git push origin main
